@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=FBA Explorer
-Comment=Arcade machine emulator
+Comment=Arcade machine emulator - explorer
 Exec=fbasdl.dge %f
 Terminal=false
 Type=Application
@@ -8,3 +8,5 @@ StartupNotify=true
 Icon=fba_icon
 Categories=emulators;
 X-OD-NeedsDownscaling=true
+X-OD-Filter=.zip
+X-OD-Alias=aliases.txt
