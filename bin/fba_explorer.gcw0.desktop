@@ -1,11 +1,11 @@
 [Desktop Entry]
-Name=FinalBurnAlpha
+Name=FBA Explorer
 Comment=Arcade machine emulator - explorer
 Exec=fbasdl.dge %f
 Terminal=false
 Type=Application
 StartupNotify=true
-Icon=fbasdl_icon
+Icon=fba_icon
 Categories=emulators;
 X-OD-Filter=.zip
 X-OD-Alias=aliases.txt
