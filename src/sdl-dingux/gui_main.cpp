@@ -2007,7 +2007,8 @@ pagedown:
 						sel.ofs = 0;
 					} else {
 movedown:
-						if (romlist.nb_list[cfg.list] < 14) { // if rom number in list < 14
+						if (romlist.nb_list[cfg.list] <= gui_lang.gamelist_line_count + 1) {
+							// if rom number in list <= gui_lang.gamelist_line_count + 1
 								if (sel.rom < romlist.nb_list[cfg.list] - 1) {
 									sel.y += gui_lang.gamelist_line_height;
 									++sel.rom;
