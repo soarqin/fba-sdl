@@ -179,7 +179,7 @@ void RunEmulator(int drvnum)
 		while (GameLooping)
 		{
 			timer = GetTicks()/frametime;;
-			if(timer-tick>frame_limit && bShowFPS)
+			if(timer-tick>=frame_limit && bShowFPS)
 			{
 				fps = nFramesRendered;
 				nFramesRendered = 0;

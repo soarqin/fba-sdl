@@ -15,14 +15,20 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
+ *
+ * 2020-01-14: Language pack for FinalBurn Alpha by nobk @ github
  */
+ 
+#ifndef _GUI_LANPACK_H_
+#define _GUI_LANPACK_H_
 
-#ifndef _SDL_INPUT_H_
-#define _SDL_INPUT_H_
+#define RGBA_TRANSPARENT 0x00ffffff
 
-void do_keypad();
-void sdl_input_init();
-void button_map_init();
-void sdl_autofire_init();
+typedef void (*lang_DrawString_t)( const char *cstr, uint32_t *screen, 
+uint32_t x, uint32_t y, uint32_t resW, uint32_t RGBvalue );
 
-#endif // _SDL_INPUT_H_
+bool gui_load_language_pack();
+void lang_DrawString( uint32_t romID, uint32_t * screen,
+					  uint32_t x, uint32_t y, uint32_t resW, uint32_t RGBvalue );
+
+#endif

@@ -64,4 +64,8 @@ void gui_clear_favorite(bool missing);
 void gui_favorite_change(unsigned int rom);
 bool gui_in_favorite(unsigned int rom);
 
+void add_to_favorite(unsigned int rom);
+void remove_from_favorite(unsigned int rom);
+void save_favorite();
+
 #endif // _GUI_ROMLIST_H_

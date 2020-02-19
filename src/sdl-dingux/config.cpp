@@ -150,20 +150,19 @@ int ConfigAppSave()
 	return 0;
 }
 
-void ConfigGameDefault()
+void setGameDefault(bool vertical)
 {
-	if (ConfigGameLoadDefault()) {
-		printf("ConfigGameLoadDefault true\n");
-		return;
-	}
 	printf("Initialize default configuration options\n");
 	// Initialize configuration options
 	options.sound = 2;
 	options.samplerate = 2;		// 0 - 11025, 1 - 16000, 2 - 22050, 3 - 32000
 	options.vsync = 0;
 	options.rescale = 0;		// no scaling by default
-	options.rotate = 0;
-	options.hwscaling = 0;		// no HW scaling by default
+	if(vertical)
+		options.rotate = 2;
+	else
+		options.rotate = 0;
+	options.hwscaling = 2;		// HW scaling full screen by default
 	options.showfps = 0;
 	options.frameskip = -1;		// auto frameskip by default
 	options.create_lists = 0;
@@ -175,10 +174,17 @@ void ConfigGameDefault()
 	keymap.down = SDLK_DOWN;
 	keymap.left = SDLK_LEFT;
 	keymap.right = SDLK_RIGHT;
-	keymap.fire1 = SDLK_LCTRL;	// A
-	keymap.fire2 = SDLK_LALT;	// B
-	keymap.fire3 = SDLK_SPACE;	// X
-	keymap.fire4 = SDLK_LSHIFT;	// Y
+	if(vertical) {
+		keymap.fire1 = SDLK_LALT;	// B
+		keymap.fire2 = SDLK_LCTRL;	// A
+		keymap.fire3 = SDLK_LSHIFT;	// Y
+		keymap.fire4 = SDLK_SPACE;	// X
+	} else {
+		keymap.fire1 = SDLK_LSHIFT;	// Y
+		keymap.fire2 = SDLK_LALT;	// B
+		keymap.fire3 = SDLK_SPACE;	// X
+		keymap.fire4 = SDLK_LCTRL;	// A
+	}
 	keymap.fire5 = SDLK_TAB;	// L
 	keymap.fire6 = SDLK_BACKSPACE;	// R
 	keymap.coin1 = SDLK_ESCAPE;	// SELECT
@@ -188,18 +194,47 @@ void ConfigGameDefault()
 	keymap.qsave = SDLK_s;		// quick save
 	keymap.qload = SDLK_l;		// quick load
 
-	autofire.fire1.fps = 0;
-	autofire.fire1.key = keymap.fire1;
-	autofire.fire2.fps = 0;
-	autofire.fire2.key = keymap.fire2;
+	autofire.fire1.key = keymap.fire3;
+	autofire.fire2.key = keymap.fire4;
+	autofire.fire3.key = keymap.fire5;
+	autofire.fire4.key = keymap.fire6;
+	autofire.fire5.key = keymap.fire1;
+	autofire.fire6.key = keymap.fire2;
+	if(vertical) {
+		autofire.fire1.fps = 6;
+		autofire.fire2.fps = 6;
+	} else {
+		autofire.fire1.fps = 0;
+		autofire.fire2.fps = 0;
+	}
 	autofire.fire3.fps = 0;
-	autofire.fire3.key = keymap.fire3;
 	autofire.fire4.fps = 0;
-	autofire.fire4.key = keymap.fire4;
 	autofire.fire5.fps = 0;
-	autofire.fire5.key = keymap.fire5;
 	autofire.fire6.fps = 0;
-	autofire.fire6.key = keymap.fire6;
+}
+
+void ConfigGameAllDefault()
+{
+	ConfigGameLoadVDefault();
+	ConfigGameLoadDefault();
+}
+
+void ConfigGameDefault()
+{
+	bool bVertical = BurnDrvGetFlags() & BDF_ORIENTATION_VERTICAL;
+	printf("ConfigGameDefault\n");
+	if(bVertical) {
+		if (ConfigGameLoadVDefault()) {
+			printf("ConfigGameLoadVDefault true\n");
+			return;
+		}
+	} else {
+		if (ConfigGameLoadDefault()) {
+			printf("ConfigGameLoadDefault true\n");
+			return;
+		}
+	}
+	setGameDefault(bVertical);
 }
 
 int ConfigGameLoad(FILE * f)
@@ -253,7 +288,6 @@ int ConfigGameLoad(FILE * f)
 			if(strcmp(arg1, "AUTO_FIRE6_KEY") == 0) autofire.fire6.key = argd;
 		}
 	}
-
 	return 1;
 }
 
@@ -266,7 +300,7 @@ int ConfigGameLoad()
 	
 	if(!(f = fopen(cfgname,"r"))) {
 		// set default values and exit
-		printf("no found config file:%s\n", cfgname);
+		printf("no found config file:%s set default\n", cfgname);
 		ConfigGameDefault();
 		return 0;
 	}
@@ -282,17 +316,35 @@ int ConfigGameLoadDefault()
 {
 	FILE *f;
 	char cfgname[MAX_PATH];
-
 	sprintf((char*)cfgname, "%s/default.cfg", szAppHomePath);
 	if(!(f = fopen(cfgname,"r"))) {
 		printf("no found config file:%s\n", cfgname);
+		setGameDefault(false);
 		return 0;
 	}
 
 	int ret = ConfigGameLoad(f);
 
 	fclose(f);
-	
+
+	return ret;
+}
+
+int ConfigGameLoadVDefault()
+{
+	FILE *f;
+	char cfgname[MAX_PATH];
+	sprintf((char*)cfgname, "%s/vdefault.cfg", szAppHomePath);
+	if(!(f = fopen(cfgname,"r"))) {
+		printf("no found config file:%s\n", cfgname);
+		setGameDefault(true);
+		return 0;
+	}
+
+	int ret = ConfigGameLoad(f);
+
+	fclose(f);
+
 	return ret;
 }
 
@@ -368,7 +420,21 @@ int ConfigGameSaveDefault()
 	fp = fopen(cfgname, "w");
 	printf("ConfigGameSaveDefault:%s\n",cfgname);
 	int ret = ConfigGameSave(fp);
-	
+
+	fclose(fp);
+	return ret;
+}
+
+int ConfigGameSaveVDefault()
+{
+	FILE *fp;
+	char cfgname[MAX_PATH];
+
+	sprintf((char*)cfgname, "%s/vdefault.cfg", szAppHomePath);
+	fp = fopen(cfgname, "w");
+	printf("ConfigGameSaveVDefault:%s\n",cfgname);
+	int ret = ConfigGameSave(fp);
+
 	fclose(fp);
 	return ret;
 }
@@ -398,4 +464,7 @@ void ConfigGameDefaultDelete() {
 
 	remove(cfgname);
 	printf("ConfigGameDefaultDelete:%s\n",cfgname);
+	sprintf((char*)cfgname, "%s/vdefault.cfg", szAppHomePath);
+	remove(cfgname);
+	printf("ConfigGameVDefaultDelete:%s\n",cfgname);
 }

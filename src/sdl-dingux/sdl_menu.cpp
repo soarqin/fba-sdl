@@ -21,6 +21,11 @@
 #include <string.h>
 #include <sys/time.h>
 #include <SDL/SDL.h>
+#include <SDL/SDL_image.h>
+#include <vector>
+#include <fstream>
+#include <avir.h>
+#include <png++/png.hpp>
 
 #include "version.h"
 #include "burner.h"
@@ -28,6 +33,7 @@
 #include "sdl_run.h"
 #include "sdl_video.h"
 #include "sdl_input.h"
+#include "gui_gfx.h"
 
 #ifdef FBA_DEBUG
 #include "m68000_intf.h"
@@ -67,20 +73,158 @@ typedef struct {
 	MENUITEM *m; // array of items
 } MENU;
 
+typedef struct {
+	int w;
+	int h;
+	uint8_t pixels[8];
+} inGameScreen_t;
+inGameScreen_t * inGameScreen = NULL;
+
+static inline inGameScreen_t * CopyScreen(SDL_Surface * src)
+{
+	if(!src)
+		return NULL;
+	if( src->w > 1920 || src->h > 1200 )
+		return NULL;
+	const size_t sz = src->w * src->h * 2;
+	inGameScreen_t * savescreen = (inGameScreen_t *) malloc(sz + 16);
+	if(!savescreen)
+		return NULL;
+	savescreen->w = src->w;
+	savescreen->h = src->h;
+	memcpy(savescreen->pixels, src->pixels, sz);
+	return savescreen;
+}
+
+void pngsave(const char * filename, uint16_t * rgb565, int w, int h, int outw, int outh)
+{
+	if(w <= 0 || h <= 0 || !rgb565 || !filename || outw <= 0 || outh <= 0)
+		return;
+	try {
+		const size_t ow = outw;
+		const size_t oh = outh;
+		png::image< png::rgb_pixel,png::solid_pixel_buffer<png::rgb_pixel> > img(ow,oh);
+		const int npixels = w * h;
+		std::vector<uint8_t> imgu8(npixels * 3);
+		// We have to convert from RGB565 to RGB each coded on uint8 because PNG doesn't support RGB565
+		for (int i = 0; i < npixels; ++i) {
+			const uint16_t v = rgb565[i];
+			// Convert and rescale to the full 0-255 range
+			// See http://stackoverflow.com/a/29326693
+			const uint8_t red5 = (v & 0xF800) >> 11;
+			const uint8_t green6 = (v & 0x7E0) >> 5;
+			const uint8_t blue5 = (v & 0x001F);
+			imgu8[3 * i] = ((red5 * 255 + 15) / 31);
+			imgu8[3 * i + 1] = ((green6 * 255 + 31) / 63);
+			imgu8[3 * i + 2] = ((blue5 * 255 + 15) / 31);
+		}
+		avir :: CImageResizer<> imageResizer( 8 );
+		uint8_t * Inbuf = (uint8_t *)imgu8.data();
+		uint8_t * Outbuf = (uint8_t *)img.get_pixbuf().get_bytes().data();
+		imageResizer.resizeImage( Inbuf, w, h, 0, Outbuf, ow, oh, 3, 0 );
+		img.write(filename);
+	}
+	catch(std::exception const& error)
+	{
+		std::cerr << "png++ err: " << error.what() << std::endl;
+		return;
+	}
+}
+
+#define SP_SCREEN_W 320
+#define SP_SCREEN_H 240
+#define SP_PREVIEW_W 190
+#define SP_PREVIEW_H 112
+#define SP_PIC_W (SP_SCREEN_W/2)
+#define SP_PIC_H (SP_SCREEN_H/2)
+
+void pngpreview_save(const char * filename, uint16_t * rgb565, int w, int h)
+{
+	pngsave(filename, rgb565, w, h, SP_PREVIEW_W, SP_PREVIEW_H);
+}
+
+void pngfullscreen_save(const char * filename, uint16_t * rgb565, int w, int h)
+{
+	pngsave(filename, rgb565, w, h, SP_SCREEN_W, SP_SCREEN_H);
+}
+
+static SDL_Surface * last_stpv = NULL;
+static int last_stpvslot = -1;
+
+void save_state_preview(bool ingame, bool preview_only=false);
+
+void save_state_preview(bool ingame, bool preview_only)
+{
+	if(!ingame && NULL==inGameScreen)
+		return;
+	uint16_t * p = NULL;
+	int w = 0, h = 0;
+	if( ingame ) {
+		p = (uint16_t *) screen->pixels;
+		w = screen->w;
+		h = screen->h;
+	} else {
+		p = (uint16_t *) inGameScreen->pixels;
+		w = inGameScreen->w;
+		h = inGameScreen->h;
+	}
+	if (!p || w <= 0 || h <= 0 )
+		return;
+	char sp_path[MAX_PATH];
+	if(!preview_only)
+	{
+		sprintf(sp_path, "%s/%s%i.png", szAppSavePath, BurnDrvGetText(DRV_NAME), nSavestateSlot);
+		pngfullscreen_save(sp_path, p, w, h);
+		last_stpvslot = -1; //force reload png
+	}
+	sprintf(sp_path, "%s/%s%ip.png", szAppSavePath, BurnDrvGetText(DRV_NAME), nSavestateSlot);
+	pngpreview_save(sp_path, p, w, h);
+}
+
+void Show_state_preview()
+{
+#define SPREVIEW_LOC_X 0
+#define SPREVIEW_LOC_Y 0
+	char sp_path[MAX_PATH];
+	if(!(last_stpv && last_stpvslot==nSavestateSlot))
+	{
+		if(last_stpv ) {
+			SDL_FreeSurface(last_stpv);
+			last_stpv = NULL;
+		}
+		sprintf(sp_path, "%s/%s%i.png", szAppSavePath, BurnDrvGetText(DRV_NAME), nSavestateSlot);
+		last_stpv = IMG_Load(sp_path);
+		last_stpvslot = nSavestateSlot;
+	}
+	if(last_stpv)
+		drawSprite(last_stpv, menuSurface, 0, 0, SPREVIEW_LOC_X, SPREVIEW_LOC_Y, SP_SCREEN_W, SP_SCREEN_H);
+}
+
+void Show_real_preview()
+{
+#define RPREVIEW_LOC_X (220 - preview->w / 2)
+#define RPREVIEW_LOC_Y 56
+	char sp_path[MAX_PATH];
+	sprintf((char*)sp_path, "%s/%s.png", szAppPreviewPath, BurnDrvGetText(DRV_NAME));
+	extern SDL_Surface *preview;
+	if(!preview) return;
+		drawSprite(preview, menuSurface, 0, 0, RPREVIEW_LOC_X, RPREVIEW_LOC_Y, SP_PREVIEW_W, SP_PREVIEW_H);
+}
+
 /* prototypes */
 static void gui_Stub() { }
 static void gui_LoadState() { extern int done; if(!StatedLoad(nSavestateSlot)) done = 1; }
-static void gui_Savestate() { StatedSave(nSavestateSlot); }
+static void gui_Savestate() { StatedSave(nSavestateSlot); save_state_preview(false); }
 static void call_exit() { extern int done; GameLooping = false; done = 1; }
 static void call_continue() { extern int done; done = 1; }
 static void gui_KeyMenuRun();
 static void gui_AutofireMenuRun();
 static void gui_help();
 static void gui_reset();
+static void gui_SavePreview();
 
 /* data definitions */
-#define GCW0_KEY_ORDER
-#ifdef GCW0_KEY_ORDER
+#ifdef GCW0_BTN_LAYOUT
 char *gui_KeyNames[] = {"A", "B", "Y", "X", "L", "R"};
 #else
 char *gui_KeyNames[] = {"A", "B", "X", "Y", "L", "R"};
@@ -99,13 +243,14 @@ MENUITEM gui_MainMenuItems[] = {
 	{(char *)"Autofire config", NULL, 0, NULL, &gui_AutofireMenuRun},
 	{(char *)"Load state: ", &nSavestateSlot, 9, NULL, &gui_LoadState},
 	{(char *)"Save state: ", &nSavestateSlot, 9, NULL, &gui_Savestate},
+	{(char *)"Save as preview", NULL, 0, NULL, &gui_SavePreview},
 	{(char *)"Help", NULL, 0, NULL, &gui_help},
 	{(char *)"Reset", NULL, 0, NULL, &gui_reset},
 	{(char *)"Exit", NULL, 0, NULL, &call_exit},
 	{NULL, NULL, 0, NULL, NULL}
 };
 
-MENU gui_MainMenu = { 8, 0, (MENUITEM *)&gui_MainMenuItems };
+MENU gui_MainMenu = { 9, 0, (MENUITEM *)&gui_MainMenuItems };
 
 MENUITEM gui_KeyMenuItems[] = {
 	{(char *)"Fire 1   - ", &gui_KeyData[0], 5, (char **)&gui_KeyNames, NULL},
@@ -122,7 +267,7 @@ MENU gui_KeyMenu = { 6, 0, (MENUITEM *)&gui_KeyMenuItems };
 MENUITEM gui_AutofireMenuItems[] = {
 	{(char *)"Autofire 1 fps - ", &gui_AutofireFpsData[0], 4, (char **)&gui_AutofireFpsNames, NULL},
 	{(char *)"Autofire 1 key - ", &gui_KeyData[0], 5, (char **)&gui_KeyNames, NULL},
-	{(char *)"Autofire 2 fps - ", &gui_AutofireFpsData[1], 5, (char **)&gui_AutofireFpsNames, NULL},
+	{(char *)"Autofire 2 fps - ", &gui_AutofireFpsData[1], 4, (char **)&gui_AutofireFpsNames, NULL},
 	{(char *)"Autofire 2 key - ", &gui_KeyData[1], 5, (char **)&gui_KeyNames, NULL},
 	{(char *)"Autofire 3 fps - ", &gui_AutofireFpsData[2], 4, (char **)&gui_AutofireFpsNames, NULL},
 	{(char *)"Autofire 3 key - ", &gui_KeyData[2], 5, (char **)&gui_KeyNames, NULL},
@@ -212,6 +357,16 @@ void ShowHeader()
 	DrawString("Based on FBA " VERSION " (c) Team FB Alpha", COLOR_HELP_TEXT, COLOR_BG, 0, 12);
 }
 
+void ShowPreview(MENU *menu)
+{
+	if(menu == &gui_MainMenu)
+	{
+		if(menu->itemCur==3 || menu->itemCur==4)
+			Show_state_preview();
+		if(menu->itemCur==5)
+			Show_real_preview();
+	}
+}
 /*
 	Shows menu items and pointing arrow
 */
@@ -223,20 +378,21 @@ void ShowMenu(MENU *menu)
 	// clear buffer
 	SDL_FillRect(menuSurface, NULL, COLOR_BG);
 
+	// show preview screen
+	ShowPreview(menu);
+
 	// show menu lines
-	int startline = menu == &gui_AutofireMenu ? 12 : 16;
+	int startline = menu == &gui_AutofireMenu ? 11 : 12;
 	for(i = 0; i < menu->itemNum; i++, mi++) {
 		int fg_color;
 
 		if(menu->itemCur == i) fg_color = COLOR_ACTIVE_ITEM; else fg_color = COLOR_INACTIVE_ITEM;
-		ShowMenuItem(80, (startline + i) * 8, mi, fg_color);
+		ShowMenuItem(40, (startline + i) * 8, mi, fg_color);
 	}
-
-	// show preview screen
-	//ShowPreview(menu);
 
 	// print info string
 	ShowHeader();
+
 }
 
 /*
@@ -325,7 +481,12 @@ static void gui_help()
 	DrawString("START        Start1", COLOR_INACTIVE_ITEM, COLOR_BG, x, row++ * row_size);
 	DrawString("SELECT+START Start2", COLOR_INACTIVE_ITEM, COLOR_BG, x, row++ * row_size);
 	DrawString("A,B,X,Y,L,R  Fire buttons", COLOR_INACTIVE_ITEM, COLOR_BG, x, row++ * row_size);
-	DrawString("L+R+X        Show/hide fps", COLOR_INACTIVE_ITEM, COLOR_BG, x, (++row)++ * row_size);
+#ifdef GCW0_BTN_LAYOUT
+#define SHOW_FPS_LR		"L+R+X        Show/hide fps"
+#else
+#define SHOW_FPS_LR		"L+R+Y        Show/hide fps"
+#endif
+	DrawString(SHOW_FPS_LR, COLOR_INACTIVE_ITEM, COLOR_BG, x, (++row)++ * row_size);
 	DrawString("L+R+A        Quick load", COLOR_INACTIVE_ITEM, COLOR_BG, x, row++ * row_size);
 	DrawString("L+R+B        Quick save", COLOR_INACTIVE_ITEM, COLOR_BG, x, row++ * row_size);
 	DrawString("L+R+SELECT   Service menu", COLOR_INACTIVE_ITEM, COLOR_BG, x, row++ * row_size);
@@ -347,6 +508,48 @@ static void gui_help()
 		SDL_Delay(16);
 	}
 
+}
+
+static inline void copy_file( const char* srce_file, const char* dest_file )
+{
+	try {
+		std::ifstream srce( srce_file, std::ios::binary ) ;
+		std::ofstream dest( dest_file, std::ios::binary ) ;
+		dest << srce.rdbuf() ;
+	}
+	catch( const std::exception& e )
+	{
+		std::cerr << "copy_file() err: " << e.what() << '\n' ;
+	}
+}
+
+static void gui_SavePreview()
+{
+	char sp_path[MAX_PATH];
+	char pv_path[MAX_PATH];
+	sprintf(sp_path, "%s/%s%ip.png", szAppSavePath, BurnDrvGetText(DRV_NAME), nSavestateSlot);
+	if( access(sp_path, R_OK) ) {
+		save_state_preview(false, true);
+		if( access(sp_path, R_OK) )
+			return;
+	} else {
+		sprintf(pv_path, "%s/%s%i.sav", szAppSavePath, BurnDrvGetText(DRV_NAME), nSavestateSlot);
+		if( access(pv_path, R_OK) ) { // no save state, aways try create preview by paused game picture
+			save_state_preview(false, true);
+			if( access(sp_path, R_OK) )
+				return;
+		}
+	}
+	sprintf((char*)pv_path, "%s/%s.png", szAppPreviewPath, BurnDrvGetText(DRV_NAME));
+	copy_file(sp_path, pv_path);
+	if( access(pv_path, R_OK) )
+		return;
+	// load new preview
+	extern void load_preview(unsigned int numero);
+	extern int last_numero;
+	int n = last_numero;
+	last_numero = -1;
+	load_preview(n);
 }
 
 static void gui_reset()
@@ -374,6 +577,12 @@ void gui_Run()
 	debug = 1;
 #endif
 	gettimeofday(&s, NULL);
+	// copy in game screen for save preview picture
+	if (inGameScreen) {
+		free(inGameScreen);
+		inGameScreen = NULL;
+	}
+	inGameScreen = CopyScreen(screen);
 #ifdef DEVICE_GCW0
 	if (hwscale > 0 && (screen->w != 320 || screen->h != 240)) {
 		VideoInitForce320x240(); // sets video mode to 320x240 so the menu screen looks right when a game uses a resolution different than 320x240
@@ -400,6 +609,12 @@ void gui_Run()
 void gui_Exit()
 {
 	if(menuSurface) SDL_FreeSurface(menuSurface);
+	if(last_stpv) SDL_FreeSurface(last_stpv);
+	if(inGameScreen) free(inGameScreen);
+	last_stpvslot = -1;
+	menuSurface = NULL;
+	last_stpv = NULL;
+	inGameScreen = NULL;
 }
 
 #ifdef FBA_DEBUG

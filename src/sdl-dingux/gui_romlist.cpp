@@ -23,6 +23,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <set>
+#include <algorithm>
+#include <unordered_set>
+#include <fstream>
+#include <sstream>
+#include <streambuf>
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
@@ -159,38 +164,116 @@ void save_favorite()
 	}
 }
 
-static void sort_alphabet(unsigned int romsort[], unsigned int minimun, unsigned int maximum)
+static inline void load_last_romlist(std::unordered_set<std::string> & romset)
 {
-	unsigned int tampon, ligne1, ligne2;
-	unsigned int min;
-
-	// tri des dossiers en premier
-	for(ligne1 = minimun; ligne1 < maximum - 1; ++ligne1) {
-		min = ligne1;
-
-		for(ligne2 = ligne1 + 1; ligne2 < maximum; ++ligne2) {
-			if(strcmp(romlist.name[romsort[ligne2]], romlist.name[romsort[min]]) < 0) {
-				min = ligne2;
+	romset.clear();
+	char filename[MAX_PATH];
+	sprintf(filename, "%s/lastromlist.txt", szAppHomePath);
+	FILE * fp = fopen(filename, "r");
+	if(!fp) return;
+	char txtline[256];
+	while(fgets(txtline, sizeof(txtline), fp) != NULL) {
+		size_t sz = strlen(txtline);
+		if(!sz) continue;
+		for(int i=sz-1; i>=0; --i)
+			if(txtline[i]=='\n')
+			{
+				txtline[i] = 0;
+				break;
 			}
-		}
+		if(strlen(txtline))
+			romset.insert(txtline);
+	}
+	fclose(fp);
+}
 
-		if (min != ligne1){
-			tampon = romsort[ligne1];
-			romsort[ligne1] = romsort[min];
-			romsort[min] = tampon;
+static inline void save_last_romlist(std::unordered_set<std::string> & romset)
+{
+	char filename[MAX_PATH];
+	sprintf(filename, "%s/lastromlist.txt", szAppHomePath);
+	FILE * fp = fopen(filename, "w");
+	if(!fp) {
+		romset.clear();
+		return;
+	}
+	for(auto & oneline : romset) {
+		fputs(oneline.c_str(), fp);
+		fputc('\n', fp);
+	}
+	fclose(fp);
+	romset.clear();
+}
+
+static std::string get_romsdir_string()
+{
+	char dir_path[MAX_PATH];
+	std::ostringstream ss;
+	for(int i = 0; i < DIRS_MAX; i++) {
+		struct stat stbuf;
+		if(0==stat(szAppRomPaths[i], &stbuf) ) {
+			ss << i << "#" << (uint32_t) stbuf.st_mtime << "$";
 		}
 	}
+	return ss.str();
+}
+
+static std::string load_romsdir_string()
+{
+	char filename[MAX_PATH];
+	sprintf(filename, "%s/romsdirstat.txt", szAppHomePath);
+	std::ifstream t(filename);
+
+	if(!t) return "";
+
+	std::string str;
+
+	t.seekg(0, std::ios::end);
+	str.reserve(t.tellg());
+	t.seekg(0, std::ios::beg);
+
+	str.assign((std::istreambuf_iterator<char>(t)),
+			   std::istreambuf_iterator<char>());
+	return str;
+}
+
+static void save_romsdir_string(const std::string & str)
+{
+	if(!str.length()) return;
+	char filename[MAX_PATH];
+	sprintf(filename, "%s/romsdirstat.txt", szAppHomePath);
+	std::ofstream t(filename);
+	if(!t) return;
+	t << str;
 }
 
 void gui_sort_romlist()
 {
+options.create_lists = 0;
+
+	bool use_last_romlist = false;
+	std::unordered_set<std::string> romset;
+	if(!options.create_lists)
+	{
+		load_last_romlist(romset);
+		if(romset.size())
+			use_last_romlist = true;
+	}
+
+	std::string curm = get_romsdir_string();
+	std::string past = load_romsdir_string();
+
+	if(!curm.length() || !past.length() || curm !=  past)
+	{
+		use_last_romlist = false;
+		save_romsdir_string(curm);
+	}
+
 	for (int i = 0; i < NB_FILTERS; i++)
 	{
 		unfiltered_romsort[i] = (unsigned int *)malloc(NB_MAX_GAMES * sizeof(unsigned int));
 	}
 
 	char g_string[2048];
-	FILE *fp;
 
 	romlist.nb_list[0] = 0;
 	romlist.long_max = 0;
@@ -214,22 +297,36 @@ void gui_sort_romlist()
 		romlist.etat[i] = ROUGE;
 		for(int j = 0; j < DIRS_MAX; j++) {
 			if(strlen(szAppRomPaths[j]) > 0) {
-				sprintf(g_string, "%s%s.zip", szAppRomPaths[j], romlist.zip[i] );
-				if((fp = fopen(g_string, "r")) != NULL) {
-					fclose(fp);
-					romlist.etat[i] = (BurnDrvGetTextA(DRV_PARENT) ? ORANGE : JAUNE);
-					++romlist.nb_rom;
-					break;
+				if(use_last_romlist) {
+					if( romset.find(romlist.zip[i]) != romset.end() ) {
+						romlist.etat[i] = (BurnDrvGetTextA(DRV_PARENT) ? ORANGE : JAUNE);
+						++romlist.nb_rom;
+						break;
+					}
+				}
+				else {
+					sprintf(g_string, "%s%s.zip", szAppRomPaths[j], romlist.zip[i]);
+					if(0 == access(g_string, R_OK)) {
+						romlist.etat[i] = (BurnDrvGetTextA(DRV_PARENT) ? ORANGE : JAUNE);
+						++romlist.nb_rom;
+						romset.insert(romlist.zip[i]);
+						break;
+					}
 				}
 			}
 		}
 		unfiltered_romsort[0][i] = i;
 	}
 
+	if(options.create_lists || !use_last_romlist)
+		save_last_romlist(romset);
+
 	romlist.nb_list[0] = nBurnDrvCount;
 
-	// sort alpha
-	sort_alphabet(unfiltered_romsort[0], 0, romlist.nb_list[0]);
+	std::sort(unfiltered_romsort[0], unfiltered_romsort[0] + romlist.nb_list[0], 
+		[](unsigned int v1, unsigned int v2) {
+			return (strcmp(romlist.name[v1], romlist.name[v2]) <= 0);
+		});
 
 	romlist.nb_list[1] = 0;
 	romlist.nb_list[2] = 0;
@@ -281,6 +378,8 @@ unsigned int * gui_get_filtered_romsort(int filter, int hardware, int genre, int
 		current_hardware = hardware;
 		current_genre = genre;
 		current_clone = clone;
+		if (filter == 4 && favorite_changed == 1)
+			favorite_changed = 0;
 		
 		if (romsort != NULL)
 		{
@@ -368,17 +467,27 @@ unsigned int * gui_get_filtered_romsort(int filter, int hardware, int genre, int
 	return romsort;
 }
 
-void gui_add_to_favorite(unsigned int rom)
+void add_to_favorite(unsigned int rom)
 {
 	favorite.insert(rom);
 	favorite_changed = 1;
+}
+
+void gui_add_to_favorite(unsigned int rom)
+{
+	add_to_favorite(rom);
 	save_favorite();
+}
+
+void remove_from_favorite(unsigned int rom)
+{
+	favorite.erase(rom);
+	favorite_changed = 1;
 }
 
 void gui_remove_from_favorite(unsigned int rom)
 {
-	favorite.erase(rom);
-	favorite_changed = 1;
+	remove_from_favorite(rom);
 	save_favorite();
 }
 

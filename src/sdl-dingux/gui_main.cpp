@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <map>
 #include <vector>
+#include <unordered_set>
+#include <unordered_map>
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
@@ -37,8 +39,11 @@
 #include "gui_romlist.h"
 #include "gui_config.h"
 #include "gui_setpath.h"
+#include "gui_language_pack.h"
 
 #define ROMLIST(A,B) romlist.A[gui_get_filtered_romsort(cfg.list, cfg.hardware, cfg.genre, cfg.clone)[B]]
+#define GUI_SCREEN_W 320
+#define GUI_SCREEN_H 240
 
 SDL_Event event;
 
@@ -48,11 +53,13 @@ SDL_Surface *bgs = NULL;
 SDL_Surface *bg_temp = NULL;
 SDL_Surface *font = NULL;
 SDL_Surface *barre = NULL;
+SDL_Surface *barre18px = NULL;
 SDL_Surface *preview = NULL;
 SDL_Surface *title = NULL;
 SDL_Surface *help = NULL;
 SDL_Surface *credit = NULL;
 SDL_Surface *Tmp = NULL;
+static SDL_Surface * lang_fontsurf = NULL;
 
 FILE *fp;
 FILE *fp2;
@@ -63,6 +70,14 @@ unsigned char flag_preview;
 char g_string[255];
 char g_message[255];
 unsigned char offset_x, offset_y;
+bool use_language_pack = false;
+typedef struct lang_t{
+	uint32_t gamelist_line_height;
+	uint32_t gamelist_line_count;
+	uint32_t gamelist_line_count_half;
+} lang_t;
+
+lang_t gui_lang = {LINE_HEIGHT, LINES_COUNT, LINES_COUNT_HALF};
 
 typedef struct selector {
 	int y;
@@ -111,6 +126,8 @@ void free_memory(void)
 	SDL_FreeSurface(title);
 	SDL_FreeSurface(help);
 	SDL_FreeSurface(credit);
+	if(lang_fontsurf) SDL_FreeSurface(lang_fontsurf);
+	if(barre18px) SDL_FreeSurface(barre18px);
 	//printf("Freeing memory\n");
 	/*for (ii=0;ii<romlist.nb_list[0];++ii){
 		free(romlist.name[ii]);
@@ -153,8 +170,6 @@ void put_string(char *string, unsigned int pos_x, unsigned int pos_y, unsigned c
 		pos_x += 6;
 	}
 }
-
-
 
 void put_stringM(char *string, unsigned int pos_x, unsigned int pos_y, unsigned int taille, unsigned char couleur)
 {
@@ -207,6 +222,41 @@ void put_stringM(char *string, unsigned int pos_x, unsigned int pos_y, unsigned 
 	}
 }
 
+static std::unordered_map<uint32_t, uint32_t> idx2RGBAcolor = {
+	{BLANC,		0xFFFFFFFF}, // white
+	{ROUGE,		0xFF0000FF}, // red
+	{ORANGE,	0xFF00A5FF},
+	{JAUNE,		0xFF00FFFF}, // yellow
+	{VERT,		0xFF00FF00}, // green
+	{BLEU,		0xFFFF0000}  // blue
+};
+
+static inline bool prepare_fontsurf()
+{
+	// RGBA 32 bits
+	if(!lang_fontsurf) {
+		lang_fontsurf = SDL_CreateRGBSurface(0, GUI_SCREEN_W, GUI_SCREEN_H,
+											 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+		if(!lang_fontsurf) return false;
+	}
+	SDL_FillRect(lang_fontsurf, NULL, RGBA_TRANSPARENT);
+	return true;
+}
+
+void lang_put_stringM( uint32_t romID, unsigned int pos_x, unsigned int pos_y, unsigned char coloridx )
+{
+	if(romID>=nBurnDrvCount || pos_x<0 || pos_y<0 || !idx2RGBAcolor.count(coloridx))
+		return;
+
+	lang_DrawString( romID, (uint32_t *)lang_fontsurf->pixels, pos_x, pos_y, GUI_SCREEN_W, idx2RGBAcolor[coloridx] );
+}
+
+static inline void lang_show_gamelist_lines()
+{
+	if( lang_fontsurf )
+		SDL_BlitSurface(lang_fontsurf, NULL, gui_screen, NULL);
+}
+
 /*void show_screen(char * text)
 {
 	#define CREDIT_X	68
@@ -229,7 +279,7 @@ void put_stringM(char *string, unsigned int pos_x, unsigned int pos_y, unsigned 
 	put_string( "Set Keys" , 142 , CREDIT_Y+8 , BLANC , credit );
 	put_string( text , CREDIT_X+8 , CREDIT_Y+24 , BLEU , credit );
 }*/
-
+int last_numero = -1;
 
 void load_preview(unsigned int numero)
 {
@@ -237,6 +287,13 @@ void load_preview(unsigned int numero)
 		flag_preview = 0;
 		return;
 	}
+	if(preview) {
+		if(last_numero==numero)
+			return;
+		SDL_FreeSurface(preview);
+		preview = NULL;
+	}
+	last_numero = numero;
 
 	char *ext[2] = {"png", "bmp"};
 	FILE *fp;
@@ -245,9 +302,7 @@ void load_preview(unsigned int numero)
 		sprintf((char*)g_string, "%s/%s.%s", szAppPreviewPath, ROMLIST(zip, numero), ext[i]);
 
 		// check first current rom
-		if((fp = fopen(g_string, "r")) != NULL) {
-			fclose(fp);
-			preview = IMG_Load(g_string);
+		if((preview = IMG_Load(g_string)) != NULL) {
 			drawSprite(bg, bg_temp, 124, 3, 124, 3, 192, 112);
 			drawSprite(preview, bg_temp, 0, 0, 220 - preview->w / 2, 3, 192, 112);
 
@@ -259,15 +314,23 @@ void load_preview(unsigned int numero)
 		if(strcmp(ROMLIST(parent, numero), "fba") != 0) {
 			sprintf((char*)g_string, "%s/%s.%s", szAppPreviewPath, ROMLIST(parent, numero), ext[i]);
 
-			if((fp = fopen(g_string, "r")) != NULL) {
-				fclose(fp);
-				preview = IMG_Load(g_string);
+			if((preview = IMG_Load(g_string)) != NULL) {
 				drawSprite(bg, bg_temp, 124, 3, 124, 3, 192, 112);
 				drawSprite(preview, bg_temp, 0, 0, 220 - preview->w / 2, 3, 192, 112);
 
 				flag_preview = 1;
 				return;
 			} 
+		}
+		if(0==i) for(int j=9; j>=0; --j) {
+			sprintf((char*)g_string, "%s/%s%ip.png", szAppSavePath, ROMLIST(zip, numero),j);
+			if((preview = IMG_Load(g_string)) != NULL) {
+				drawSprite(bg, bg_temp, 124, 3, 124, 3, 192, 112);
+				drawSprite(preview, bg_temp, 0, 0, 220 - preview->w / 2, 3, 192, 112);
+
+				flag_preview = 1;
+				return;
+			}
 		}
 	}
 
@@ -333,9 +396,9 @@ char ss_prg_credit(void)
 void ss_prg_help(void)
 {
 	#define HELP_X  20
-	#define HELP_Y	52
+	#define HELP_Y	32
 	#define HELP_L	280
-	#define HELP_H	136
+	#define HELP_H	176
 
 	unsigned int compteur = 1;
 	Uint32 Pnoir = SDL_MapRGB(help->format, 0, 0, 0);
@@ -351,7 +414,7 @@ void ss_prg_help(void)
 	carre_plein(help, HELP_X, HELP_Y, HELP_L, HELP_H, Pblanc);
 	carre_plein(help, HELP_X + 1, HELP_Y + 1, HELP_L - 2, HELP_H - 2, Pnoir);
 
-	put_string("COLOR HELP", 130, HELP_Y + 8, BLANC, help);
+	put_string("COLOR HELP", 130, HELP_Y + 8, VERT, help);
 	put_string("RED      missing", HELP_X + 82, HELP_Y + 22, ROUGE, help);
 	put_string("YELLOW   parent rom", HELP_X + 82, HELP_Y + 32, JAUNE, help);
 	put_string("ORANGE   clone rom", HELP_X + 82, HELP_Y + 42, ORANGE, help);
@@ -359,13 +422,32 @@ void ss_prg_help(void)
 	//put_string("GREEN    clone & parent & cache", HELP_X + 8, HELP_Y + 64, VERT, help);
 	//put_string("         detected", HELP_X + 8, HELP_Y + 74, VERT, help);
 	//put_string("BLUE     parent & cache detected", HELP_X + 8, HELP_Y + 84, BLEU, help);
+	put_string("WHITE    selected flag", HELP_X + 82, HELP_Y + 52, BLANC, help);
 	
-	put_string("HOTKEY HELP", 130, HELP_Y + 62, BLANC, help);
-	put_string("X+LEFT and X+RIGHT   filter by hardware", HELP_X + 10, HELP_Y + 76, BLEU, help);
-	put_string("X+UP and X+DOWN      filter by availability", HELP_X + 10, HELP_Y + 86, BLEU, help);
-	put_string("X+L and X+R          filter by genre", HELP_X + 10, HELP_Y + 96, BLEU, help);
+	put_string("HOTKEY HELP", 130, HELP_Y + 72, VERT, help);
+#ifdef GCW0_BTN_LAYOUT
+#define HELP_X_LEFTRIGHT	"X+LEFT and X+RIGHT   filter by hardware"
+#define HELP_X_UPDOWN		"X+UP and X+DOWN      filter by availability"
+#define HELP_X_LR			"X+L and X+R          filter by genre"
+#define HELP_X_SELETE		"X+SELECT    set/unset selected flag to ROM"
+#define HELP_X_A			"X+A     add selected ROM to favorites list"
+#define HELP_X_START		"X+START NO comfirm delete all selected ROM"
+#else
+#define HELP_X_LEFTRIGHT	"Y+LEFT and Y+RIGHT   filter by hardware"
+#define HELP_X_UPDOWN		"Y+UP and Y+DOWN      filter by availability"
+#define HELP_X_LR			"Y+L and Y+R          filter by genre"
+#define HELP_X_SELETE		"Y+SELECT    set/unset selected flag to ROM"
+#define HELP_X_A			"Y+A     add selected ROM to favorites list"
+#define HELP_X_START		"Y+START NO comfirm delete all selected ROM"
+#endif
+	put_string(HELP_X_LEFTRIGHT, HELP_X + 10, HELP_Y + 86, BLEU, help);
+	put_string(HELP_X_UPDOWN, HELP_X + 10, HELP_Y + 96, BLEU, help);
+	put_string(HELP_X_LR, HELP_X + 10, HELP_Y + 106, BLEU, help);
+	put_string(HELP_X_SELETE, HELP_X + 10, HELP_Y + 116, BLANC, help);
+	put_string(HELP_X_A, HELP_X + 10, HELP_Y + 126, BLEU, help);
+	put_string(HELP_X_START, HELP_X + 10, HELP_Y + 136, ROUGE, help);
 
-	put_string("Any button to return", 100, HELP_Y + 116, BLANC, help);
+	put_string("Any button to return", 100, HELP_Y + 156, VERT, help);
 
 
 	int Hquit = 0;
@@ -390,63 +472,21 @@ void ss_prg_help(void)
 
 void init_title(void)
 {
-	SDL_RWops *rw;
+	assert(!bg && !barre && !barre18px && !title && !font);
 
-#if 0
-	//load background interne ou skin
-	rw = SDL_RWFromMem(gfx_BG,sizeof(gfx_BG)/sizeof(unsigned char));
-	Tmp = SDL_LoadBMP_RW(rw,0);
-	if (cfg.skin){
-		if ((fp = fopen( "./skin/capex_bg.bmp" , "r")) != NULL){
-			Tmp = SDL_LoadBMP( "./skin/capex_bg.bmp" );
-			fclose(fp);
-		}
+	if( use_language_pack ) {
+		char fbapic[MAX_PATH];
+		sprintf(fbapic, "%s/lang/skin/fba_bg.png", szAppHomePath);
+		bg = IMG_Load(fbapic);
+		sprintf(fbapic, "%s/lang/skin/fba_title.png", szAppHomePath);
+		title = IMG_Load(fbapic);
+		sprintf(fbapic, "%s/lang/skin/fba_selector_18px.png", szAppHomePath);
+		barre18px = IMG_Load(fbapic);
 	}
-	bg = SDL_DisplayFormat(Tmp);
-	SDL_FreeSurface(Tmp);
-#endif
-	bg = IMG_Load("./skin/fba_bg.png");
-
-#if 0
-	//load selector interne ou skin
-	rw = SDL_RWFromMem(gfx_SELECTEUR,sizeof(gfx_SELECTEUR)/sizeof(unsigned char));
-	Tmp = SDL_LoadBMP_RW(rw,0);
-	if (cfg.skin){
-		if ((fp = fopen( "./skin/capex_sel.bmp" , "r")) != NULL){
-			Tmp = SDL_LoadBMP( "./skin/capex_sel.bmp" );
-			fclose(fp);
-		}
-	}
-	barre = SDL_DisplayFormat(Tmp);
-	SDL_FreeSurface(Tmp);
-	SDL_SetColorKey(barre ,SDL_SRCCOLORKEY,SDL_MapRGB(barre ->format,255,0,255));
-#endif
+	if(!bg) bg = IMG_Load("./skin/fba_bg.png");
+	if(!title) title = IMG_Load("./skin/fba_title.png");
 	barre = IMG_Load("./skin/fba_selector.png");
 
-#if 0
-	//load title interne ou skin
-	rw = SDL_RWFromMem(gfx_CAPEX,sizeof(gfx_CAPEX)/sizeof(unsigned char));
-	Tmp = SDL_LoadBMP_RW(rw,0);
-	if (cfg.skin){
-		if ((fp = fopen( "./skin/capex_title.bmp" , "r")) != NULL){
-			Tmp = (SDL_Surface *)IMG_Load( "./skin/capex_title.bmp" );
-			fclose(fp);
-		}
-	}
-	title = SDL_DisplayFormat(Tmp);
-	SDL_FreeSurface(Tmp);
-	SDL_SetColorKey(title ,SDL_SRCCOLORKEY,SDL_MapRGB(title ->format,255,0,255));
-#endif
-	title = IMG_Load("./skin/fba_title.png");
-
-#if 0
-	rw = SDL_RWFromMem(gfx_FONT,sizeof(gfx_FONT)/sizeof(unsigned char));
-	Tmp = SDL_LoadBMP_RW(rw,0);
-	font = SDL_DisplayFormat(Tmp);
-	SDL_FreeSurface(Tmp);
-	SDL_FreeRW (rw);
-	SDL_SetColorKey(font,SDL_SRCCOLORKEY,SDL_MapRGB(font->format,255,0,255));
-#endif
 	font = IMG_Load("./skin/fba_font.png");
 
 	bg_temp = SDL_CreateRGBSurface(SDL_SWSURFACE, 320, 240, 16, 0xf800, 0x07e0, 0x001f, 0x0000);
@@ -470,7 +510,16 @@ void init_title(void)
 void prep_bg()
 {
 	drawSprite(bg, bg_temp, 0, 0, 0, 0, 320, 240);
-	preparation_fenetre(bgs, bg_temp, 4, 119, 312, 118);
+	if( use_language_pack ) {
+		const int win_x=4, win_y=119, win_l=312, win_h=121;
+		Uint32 Pnoir = SDL_MapRGB(bg_temp->format, 0, 0, 0);
+		drawSprite(bgs, bg_temp, win_x, win_y, win_x, win_y, win_l, win_h);
+		ligneV(bg_temp, win_x-1, win_y, win_h, Pnoir);
+		ligneV(bg_temp, win_x+win_l, win_y, win_h, Pnoir);
+		ligneH(bg_temp, win_x, win_y-1, win_l, Pnoir);
+	} else {
+		preparation_fenetre(bgs, bg_temp, 4, 119, 312, 118);
+	}
 	if(flag_preview && romlist.nb_list[cfg.list] != 0) {
 		drawSprite(preview, bg_temp, 0, 0, 220 - preview->w / 2, 3, 192, 112);
 	}
@@ -521,6 +570,18 @@ void prep_bg_opt(int first)
 	} else if (first == OPTION_DEF_RUN_FIRST) {
 		prep_bg();
 		sprintf((char*)g_string, "Default Run Game settings:");
+		put_string( g_string , 6 , 120 , BLEU , bg_temp );
+	} else if (first == OPTION_DEF_VKEY_FIRST) {
+		prep_bg();
+		sprintf((char*)g_string, "Default Vertical Key mappings:");
+		put_string( g_string , 6 , 120 , BLEU , bg_temp );
+	} else if (first == OPTION_DEF_VAF_FIRST) {
+		prep_bg();
+		sprintf((char*)g_string, "Default Vertial Autofire settings:");
+		put_string( g_string , 6 , 120 , BLEU , bg_temp );
+	} else if (first == OPTION_DEF_VRUN_FIRST) {
+		prep_bg();
+		sprintf((char*)g_string, "Default Vertial Run Game settings:");
 		put_string( g_string , 6 , 120 , BLEU , bg_temp );
 	}
 }
@@ -583,8 +644,13 @@ void gui_menu_key_init()
 	gui_menu_key_values.push_back(SDLK_BACKSPACE);
 	gui_menu_key_labels[SDLK_LCTRL]     = "A";
 	gui_menu_key_labels[SDLK_LALT]      = "B";
+#ifdef GCW0_BTN_LAYOUT
 	gui_menu_key_labels[SDLK_SPACE]     = "Y";
 	gui_menu_key_labels[SDLK_LSHIFT]    = "X";
+#else
+	gui_menu_key_labels[SDLK_SPACE]     = "X";
+	gui_menu_key_labels[SDLK_LSHIFT]    = "Y";
+#endif
 	gui_menu_key_labels[SDLK_TAB]       = "L";
 	gui_menu_key_labels[SDLK_BACKSPACE] = "R";
 }
@@ -637,10 +703,20 @@ int gui_menu_get_prev(std::vector<int>& values, int current)
 	return result;
 }
 
+void gui_clear_last_romlist()
+{
+	char filename[MAX_PATH];
+	sprintf(filename, "%s/lastromlist.txt", szAppHomePath);
+	remove(filename);
+}
+
 void put_option_line(int first, unsigned char num, unsigned char y)
 {
 	switch(first + num) {
 	// MAIN OPTIONS
+	case OPTION_GUI_ROMLIST_CACHE_CLEAR:
+		put_string( "Clear ROMs list cache and rescaning" , OPTIONS_START_X , y , BLANC , gui_screen );
+		break;
 	case OPTION_GUI_DELAYSPEED:
 		sprintf((char*)g_string, "Keyrepeat delay: %d" , cfg.delayspeed );
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
@@ -735,6 +811,18 @@ void put_option_line(int first, unsigned char num, unsigned char y)
 		sprintf((char*)g_string, "Default Run Game settings -->");
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
+	case OPTION_GUI_DEF_VKEYS:
+		sprintf((char*)g_string, "Default Vertical Key mappings -->");
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+		break;
+	case OPTION_GUI_DEF_VAUTOFIRE:
+		sprintf((char*)g_string, "Default Vertical Autofire settings -->");
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+		break;
+	case OPTION_GUI_DEF_VRUN:
+		sprintf((char*)g_string, "Default Vertical Run Game settings -->");
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+		break;
 	case OPTION_GUI_DEF_RESET:
 		sprintf((char*)g_string, "Reset settings");
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
@@ -795,38 +883,92 @@ void put_option_line(int first, unsigned char num, unsigned char y)
 		break;
 	// RUN GAME DEFAULTS
 	case OPTION_GUI_DEF_RUN_SOUND:
+	case OPTION_GUI_DEF_VRUN_SOUND:
 		sprintf((char*)g_string, "Sound: %s", abreviation_cf[6][options.sound]);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
 	case OPTION_GUI_DEF_RUN_SAMPLERATE:
+	case OPTION_GUI_DEF_VRUN_SAMPLERATE:
 		sprintf((char*)g_string, "Audio sample rate: %sHz", abreviation_cf[7][options.samplerate]);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
-	case OPTION_GUI_DEF_RUN_ROTATE:
+	case OPTION_GUI_DEF_VRUN_ROTATE:
 		sprintf((char*)g_string, "Rotate vertical game: %s", abreviation_cf[9][options.rotate]);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
 	case OPTION_GUI_DEF_RUN_HWSCALING:
+	case OPTION_GUI_DEF_VRUN_HWSCALING:
 		sprintf((char*)g_string, "Hardware scaling: %s", abreviation_cf[10][options.hwscaling]);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
 	case OPTION_GUI_DEF_RUN_VSYNC:
+	case OPTION_GUI_DEF_VRUN_VSYNC:
 		sprintf((char*)g_string, "Vertical sync: %s", abreviation_cf[5][options.vsync]);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
 	case OPTION_GUI_DEF_RUN_SHOWFPS:
+	case OPTION_GUI_DEF_VRUN_SHOWFPS:
 		sprintf((char*)g_string, "Show FPS: %s", abreviation_cf[0][options.showfps]);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
 	case OPTION_GUI_DEF_RUN_CORE:
+	case OPTION_GUI_DEF_VRUN_CORE:
 		sprintf((char*)g_string, "68K Emu Core: %s", abreviation_cf[3][options.m68kcore]);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
 	case OPTION_GUI_DEF_RUN_ANALOG:
+	case OPTION_GUI_DEF_VRUN_ANALOG:
 		sprintf((char*)g_string, "Analogue Sensitivity: %d%%", options.sense);
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
 	case OPTION_GUI_DEF_RUN_RETURN:
+	case OPTION_GUI_DEF_VRUN_RETURN:
+		sprintf((char*)g_string, "Return back");
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+		break;
+	// KEY MAPPINGS
+	case OPTION_GUI_DEF_VKEY1:
+	case OPTION_GUI_DEF_VKEY2:
+	case OPTION_GUI_DEF_VKEY3:
+	case OPTION_GUI_DEF_VKEY4:
+	case OPTION_GUI_DEF_VKEY5:
+	case OPTION_GUI_DEF_VKEY6:
+	{
+		int idx = first + num - OPTION_GUI_DEF_VKEY1;
+		sprintf((char*)g_string, "Vertical Fire %d: %s", idx + 1, gui_menu_key_labels[(&keymap.fire1)[idx]]);
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+	}
+	break;
+	case OPTION_GUI_DEF_VKEY_RETURN:
+		sprintf((char*)g_string, "Return back");
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+		break;
+	// AUTOFIRE SETTINGS
+	case OPTION_GUI_DEF_VAF_FPS1:
+	case OPTION_GUI_DEF_VAF_FPS2:
+	case OPTION_GUI_DEF_VAF_FPS3:
+	case OPTION_GUI_DEF_VAF_FPS4:
+	case OPTION_GUI_DEF_VAF_FPS5:
+	case OPTION_GUI_DEF_VAF_FPS6:
+	{
+		int idx = (first + num - OPTION_GUI_DEF_VAF_FPS1) / 2;
+		sprintf((char*)g_string, "Vertical Autofire %d fps: %s", idx + 1, gui_menu_fps_labels[(&autofire.fire1)[idx].fps]);
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+	}
+	break;
+	case OPTION_GUI_DEF_VAF_KEY1:
+	case OPTION_GUI_DEF_VAF_KEY2:
+	case OPTION_GUI_DEF_VAF_KEY3:
+	case OPTION_GUI_DEF_VAF_KEY4:
+	case OPTION_GUI_DEF_VAF_KEY5:
+	case OPTION_GUI_DEF_VAF_KEY6:
+	{
+		int idx = (first + num - OPTION_GUI_DEF_VAF_KEY1) / 2;
+		sprintf((char*)g_string, "Vertical Autofire %d key: %s", idx + 1, gui_menu_key_labels[(&autofire.fire1)[idx].key]);
+		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
+	}
+	break;
+	case OPTION_GUI_DEF_VAF_RETURN:
 		sprintf((char*)g_string, "Return back");
 		put_string( g_string , OPTIONS_START_X , y , BLANC , gui_screen );
 		break;
@@ -845,7 +987,7 @@ void gui_validate_selection()
 {
 	gui_get_filtered_romsort(cfg.list, cfg.hardware, cfg.genre, cfg.clone); // apply filters
 	if (sel.rom < 0 || sel.ofs < 0 ||
-		sel.y < START_Y - 1 || sel.y > START_Y + (LINES_COUNT - 1) * LINE_HEIGHT ||
+		sel.y < START_Y - 1 || sel.y > START_Y + (gui_lang.gamelist_line_count - 1) * gui_lang.gamelist_line_height ||
 		sel.rom > romlist.nb_list[cfg.list] - 1 ||
 		sel.ofs > romlist.nb_list[cfg.list] - 1)
 	{
@@ -985,6 +1127,18 @@ void ss_prg_options(int first, int last)
 								*val = gui_menu_get_prev(gui_menu_key_values, *val);
 							}
 							break;
+						case OPTION_GUI_DEF_VKEY1:
+						case OPTION_GUI_DEF_VKEY2:
+						case OPTION_GUI_DEF_VKEY3:
+						case OPTION_GUI_DEF_VKEY4:
+						case OPTION_GUI_DEF_VKEY5:
+						case OPTION_GUI_DEF_VKEY6:
+							{
+								int idx = first + options_num - OPTION_GUI_DEF_VKEY1;
+								int * val = &keymap.fire1 + idx;
+								*val = gui_menu_get_prev(gui_menu_key_values, *val);
+							}
+							break;
 						case OPTION_GUI_DEF_AF_FPS1:
 						case OPTION_GUI_DEF_AF_FPS2:
 						case OPTION_GUI_DEF_AF_FPS3:
@@ -993,6 +1147,18 @@ void ss_prg_options(int first, int last)
 						case OPTION_GUI_DEF_AF_FPS6:
 							{
 								int idx = (first + options_num - OPTION_GUI_DEF_AF_FPS1) / 2;
+								int * val = (&(&autofire.fire1 + idx)->fps);
+								*val = gui_menu_get_prev(gui_menu_fps_values, *val);
+							}
+							break;
+						case OPTION_GUI_DEF_VAF_FPS1:
+						case OPTION_GUI_DEF_VAF_FPS2:
+						case OPTION_GUI_DEF_VAF_FPS3:
+						case OPTION_GUI_DEF_VAF_FPS4:
+						case OPTION_GUI_DEF_VAF_FPS5:
+						case OPTION_GUI_DEF_VAF_FPS6:
+							{
+								int idx = (first + options_num - OPTION_GUI_DEF_VAF_FPS1) / 2;
 								int * val = (&(&autofire.fire1 + idx)->fps);
 								*val = gui_menu_get_prev(gui_menu_fps_values, *val);
 							}
@@ -1009,35 +1175,54 @@ void ss_prg_options(int first, int last)
 								*val = gui_menu_get_prev(gui_menu_key_values, *val);
 							}
 							break;
+						case OPTION_GUI_DEF_VAF_KEY1:
+						case OPTION_GUI_DEF_VAF_KEY2:
+						case OPTION_GUI_DEF_VAF_KEY3:
+						case OPTION_GUI_DEF_VAF_KEY4:
+						case OPTION_GUI_DEF_VAF_KEY5:
+						case OPTION_GUI_DEF_VAF_KEY6:
+							{
+								int idx = (first + options_num - OPTION_GUI_DEF_VAF_KEY1) / 2;
+								int * val = (&(&autofire.fire1 + idx)->key);
+								*val = gui_menu_get_prev(gui_menu_key_values, *val);
+							}
+							break;
 						case OPTION_GUI_DEF_RUN_SOUND:
+						case OPTION_GUI_DEF_VRUN_SOUND:
 							options.sound--;
 							if(options.sound < 0) options.sound = 3;
 							break;
 						case OPTION_GUI_DEF_RUN_SAMPLERATE:
+						case OPTION_GUI_DEF_VRUN_SAMPLERATE:
 							options.samplerate--;
 							if(options.samplerate < 0) options.samplerate = 4;
 							break;
-						case OPTION_GUI_DEF_RUN_ROTATE:
+						case OPTION_GUI_DEF_VRUN_ROTATE:
 							options.rotate --;// ^= 1;
 							if(options.rotate<0) {
 								options.rotate = 0;
 							}
 							break;
 						case OPTION_GUI_DEF_RUN_HWSCALING:
+						case OPTION_GUI_DEF_VRUN_HWSCALING:
 							options.hwscaling--;
 							if(options.hwscaling < 0) options.hwscaling = 2;
 							break;
 						case OPTION_GUI_DEF_RUN_VSYNC:
+						case OPTION_GUI_DEF_VRUN_VSYNC:
 							options.vsync ^= 1;
 							break;
 						case OPTION_GUI_DEF_RUN_SHOWFPS:
+						case OPTION_GUI_DEF_VRUN_SHOWFPS:
 							options.showfps ^= 1;
 							break;
 						case OPTION_GUI_DEF_RUN_CORE:
+						case OPTION_GUI_DEF_VRUN_CORE:
 							options.m68kcore--;
 							if(options.m68kcore < 0) options.m68kcore = 2;
 							break;
 						case OPTION_GUI_DEF_RUN_ANALOG:
+						case OPTION_GUI_DEF_VRUN_ANALOG:
 							options.sense--;
 							if(options.sense < 0) options.sense = 100;
 							break;
@@ -1091,6 +1276,18 @@ void ss_prg_options(int first, int last)
 								*val = gui_menu_get_next(gui_menu_key_values, *val);
 							}
 							break;
+						case OPTION_GUI_DEF_VKEY1:
+						case OPTION_GUI_DEF_VKEY2:
+						case OPTION_GUI_DEF_VKEY3:
+						case OPTION_GUI_DEF_VKEY4:
+						case OPTION_GUI_DEF_VKEY5:
+						case OPTION_GUI_DEF_VKEY6:
+							{
+								int idx = first + options_num - OPTION_GUI_DEF_VKEY1;
+								int * val = &keymap.fire1 + idx;
+								*val = gui_menu_get_next(gui_menu_key_values, *val);
+							}
+							break;
 						case OPTION_GUI_DEF_AF_FPS1:
 						case OPTION_GUI_DEF_AF_FPS2:
 						case OPTION_GUI_DEF_AF_FPS3:
@@ -1099,6 +1296,18 @@ void ss_prg_options(int first, int last)
 						case OPTION_GUI_DEF_AF_FPS6:
 							{
 								int idx = (first + options_num - OPTION_GUI_DEF_AF_FPS1) / 2;
+								int * val = (&(&autofire.fire1 + idx)->fps);
+								*val = gui_menu_get_next(gui_menu_fps_values, *val);
+							}
+							break;
+						case OPTION_GUI_DEF_VAF_FPS1:
+						case OPTION_GUI_DEF_VAF_FPS2:
+						case OPTION_GUI_DEF_VAF_FPS3:
+						case OPTION_GUI_DEF_VAF_FPS4:
+						case OPTION_GUI_DEF_VAF_FPS5:
+						case OPTION_GUI_DEF_VAF_FPS6:
+							{
+								int idx = (first + options_num - OPTION_GUI_DEF_VAF_FPS1) / 2;
 								int * val = (&(&autofire.fire1 + idx)->fps);
 								*val = gui_menu_get_next(gui_menu_fps_values, *val);
 							}
@@ -1115,35 +1324,54 @@ void ss_prg_options(int first, int last)
 								*val = gui_menu_get_next(gui_menu_key_values, *val);
 							}
 							break;
+						case OPTION_GUI_DEF_VAF_KEY1:
+						case OPTION_GUI_DEF_VAF_KEY2:
+						case OPTION_GUI_DEF_VAF_KEY3:
+						case OPTION_GUI_DEF_VAF_KEY4:
+						case OPTION_GUI_DEF_VAF_KEY5:
+						case OPTION_GUI_DEF_VAF_KEY6:
+							{
+								int idx = (first + options_num - OPTION_GUI_DEF_VAF_KEY1) / 2;
+								int * val = (&(&autofire.fire1 + idx)->key);
+								*val = gui_menu_get_next(gui_menu_key_values, *val);
+							}
+							break;
 						case OPTION_GUI_DEF_RUN_SOUND:
+						case OPTION_GUI_DEF_VRUN_SOUND:
 							options.sound++;
 							if(options.sound > 3) options.sound = 0;
 							break;
 						case OPTION_GUI_DEF_RUN_SAMPLERATE:
+						case OPTION_GUI_DEF_VRUN_SAMPLERATE:
 							options.samplerate++;
 							if(options.samplerate >= 5) options.samplerate = 0;
 							break;
-						case OPTION_GUI_DEF_RUN_ROTATE:
+						case OPTION_GUI_DEF_VRUN_ROTATE:
 							options.rotate ++;// ^= 1;
 							if(options.rotate>3) {
 								options.rotate = 3;
 							}
 							break;
 						case OPTION_GUI_DEF_RUN_HWSCALING:
+						case OPTION_GUI_DEF_VRUN_HWSCALING:
 							options.hwscaling++;
 							if(options.hwscaling > 2) options.hwscaling = 0;
 							break;
 						case OPTION_GUI_DEF_RUN_VSYNC:
+						case OPTION_GUI_DEF_VRUN_VSYNC:
 							options.vsync ^= 1;
 							break;
 						case OPTION_GUI_DEF_RUN_SHOWFPS:
+						case OPTION_GUI_DEF_VRUN_SHOWFPS:
 							options.showfps ^= 1;
 							break;
 						case OPTION_GUI_DEF_RUN_CORE:
+						case OPTION_GUI_DEF_VRUN_CORE:
 							options.m68kcore++;
 							if(options.m68kcore > 2) options.m68kcore = 0;
 							break;
 						case OPTION_GUI_DEF_RUN_ANALOG:
+						case OPTION_GUI_DEF_VRUN_ANALOG:
 							options.sense++;
 							if(options.sense > 100) options.sense = 0;
 							break;
@@ -1162,7 +1390,10 @@ void ss_prg_options(int first, int last)
 						option == OPTION_GUI_DEF_RETURN ||
 						option == OPTION_GUI_DEF_KEY_RETURN ||
 						option == OPTION_GUI_DEF_AF_RETURN ||
-						option == OPTION_GUI_DEF_RUN_RETURN) {
+						option == OPTION_GUI_DEF_RUN_RETURN ||
+						option == OPTION_GUI_DEF_VKEY_RETURN ||
+						option == OPTION_GUI_DEF_VAF_RETURN ||
+						option == OPTION_GUI_DEF_VRUN_RETURN ) {
 						Quit = 1;
 					} else if (option == OPTION_GUI_FILTER) {
 						ss_prg_options(OPTION_FILTER_FIRST, OPTION_FILTER_LAST);
@@ -1178,7 +1409,7 @@ void ss_prg_options(int first, int last)
 						prep_bg_opt(first);
 					} else if (option == OPTION_GUI_DEF_RESET) {
 						ConfigGameDefaultDelete();
-						ConfigGameDefault();
+						ConfigGameAllDefault();
 						sprintf((char*)g_message, "Default setting successfully reseted");
 						prep_bg_opt(first);
 					} else if (option == OPTION_GUI_DEF_DELETE) {
@@ -1187,21 +1418,52 @@ void ss_prg_options(int first, int last)
 						prep_bg_opt(first);
 					} else if (option == OPTION_GUI_DEF_KEYS) {
 						gui_menu_key_init();
+						ConfigGameLoadDefault();
 						ss_prg_options(OPTION_DEF_KEY_FIRST, OPTION_DEF_KEY_LAST);
 						prep_bg_opt(first);
 					} else if (option == OPTION_GUI_DEF_AUTOFIRE) {
 						gui_menu_fps_init();
 						gui_menu_key_init();
+						ConfigGameLoadDefault();
 						ss_prg_options(OPTION_DEF_AF_FIRST, OPTION_DEF_AF_LAST);
 						prep_bg_opt(first);
+					} else if (option == OPTION_GUI_DEF_VKEYS) {
+						gui_menu_key_init();
+						ConfigGameLoadVDefault();
+						ss_prg_options(OPTION_DEF_VKEY_FIRST, OPTION_DEF_VKEY_LAST);
+						prep_bg_opt(first);
+					} else if (option == OPTION_GUI_DEF_VAUTOFIRE) {
+						gui_menu_fps_init();
+						gui_menu_key_init();
+						ConfigGameLoadVDefault();
+						ss_prg_options(OPTION_DEF_VAF_FIRST, OPTION_DEF_VAF_LAST);
+						prep_bg_opt(first);
 					} else if (option == OPTION_GUI_DEF_RUN) {
+						ConfigGameLoadDefault();
 						ss_prg_options(OPTION_DEF_RUN_FIRST, OPTION_DEF_RUN_LAST);
+						prep_bg_opt(first);
+					} else if (option == OPTION_GUI_DEF_VRUN) {
+						ConfigGameLoadVDefault();
+						ss_prg_options(OPTION_DEF_VRUN_FIRST, OPTION_DEF_VRUN_LAST);
 						prep_bg_opt(first);
 					} else if (option == OPTION_GUI_FAV_CLEAR) {
 						gui_clear_favorite(true);
 						gui_reset_selection();
 						sprintf((char*)g_message, "Favorites list successfully cleared");
 						prep_bg_opt(first);
+					} else if (option == OPTION_GUI_ROMLIST_CACHE_CLEAR) {
+						gui_clear_last_romlist();
+						gui_reset_selection();
+						sprintf((char*)g_message, "ROMs list cache successfully cleared, rescaning...");
+						prep_bg_opt(first);
+						affiche_BG();
+						drawSprite(barre, gui_screen, 0, 0, 4, options_y, 312, 10);
+						redraw_screen();
+
+						gui_sort_romlist();
+
+						prep_bg_main();
+						Quit = 1;
 					}
 				} else if(event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_SPACE) {
 					int option = first + options_num;
@@ -1221,10 +1483,20 @@ void ss_prg_options(int first, int last)
 		if (!Quit && first == OPTION_FILTER_FIRST) {
 			prep_bg_opt(first);
 		}
-		if (Quit && first == OPTION_DEF_FIRST) {
-			ConfigGameSaveDefault();
+		if(Quit){
+			switch(first) {
+				case OPTION_DEF_KEY_FIRST:
+				case OPTION_DEF_AF_FIRST:
+				case OPTION_DEF_RUN_FIRST:
+					ConfigGameSaveDefault();
+					break;
+				case OPTION_DEF_VKEY_FIRST:
+				case OPTION_DEF_VAF_FIRST:
+				case OPTION_DEF_VRUN_FIRST:
+					ConfigGameSaveVDefault();
+					break;
+			}
 		}
-
 	}
 	gui_write_cfg();
 }
@@ -1472,6 +1744,9 @@ void ss_prog_run(void)
 					save_lastsel();
 
 					nBurnDrvActive = nBurnDrvSelect[0] = nb_rom;
+					bool bVertical = BurnDrvGetFlags() & BDF_ORIENTATION_VERTICAL;
+					if(!bVertical)
+						options.rotate = 0;
 					ConfigGameSave();
 
 					SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -1552,12 +1827,28 @@ void load_lastsel()
 	gui_validate_selection();
 }
 
+void set_language()
+{
+	// default lang English
+	gui_lang.gamelist_line_height = LINE_HEIGHT;
+	gui_lang.gamelist_line_count = LINES_COUNT;
+	gui_lang.gamelist_line_count_half = LINES_COUNT_HALF;
+	if(!use_language_pack) return;
+
+	extern size_t pixfont_height;
+	if(!pixfont_height)
+		return;
+	gui_lang.gamelist_line_height = pixfont_height;
+	gui_lang.gamelist_line_count = (LINE_HEIGHT * LINES_COUNT+pixfont_height-1) / gui_lang.gamelist_line_height;
+	gui_lang.gamelist_line_count_half = gui_lang.gamelist_line_count / 2;
+}
+
 void gui_menu_main()
 {
 	int Quit;
-	unsigned int zipnum;
-	unsigned int y;
+	unsigned int romlist_y;
 	unsigned int compteur = 0;
+	std::unordered_set<int> selected_flag_roms;
 
 	sel.y = START_Y-1;
 	sel.x=0;
@@ -1571,36 +1862,74 @@ void gui_menu_main()
 	load_preview(sel.rom);
 
 	//load_cf();
+	int barre_offset = 0;
+	int barre_y = 0;
+	int barre_height = 10;
+	if(use_language_pack) {
+		if(barre18px) {
+			switch(gui_lang.gamelist_line_height) {
+			case 12: barre_y = 2; barre_height = 14; break;
+			case 13: barre_y = 1; barre_height = 15; break;
+			case 14: barre_y = 1; barre_height = 16; break;
+			case 15: barre_y = 0; barre_height = 17; break;
+			case 16:
+			default: barre_y = 0; barre_height = 18; break;
+			}
+		} else {
+			barre_offset = (gui_lang.gamelist_line_height-10)/2;
+		}
+	}
 
 	Quit = 0;
 	while(!Quit) {
 		affiche_BG();
 
 		if (romlist.nb_list[cfg.list] != 0) {
-			drawSprite(barre, gui_screen, 0, 0, 4, sel.y, 312, 10);
+			drawSprite((use_language_pack && barre18px)? barre18px: barre, gui_screen,
+					   0, barre_y, 4, sel.y + barre_offset, 312, barre_height);
 		}
 
 		// show rom list
-		zipnum = START_Y;
-		if(romlist.nb_list[cfg.list] <= LINES_COUNT) {
-			for(y = 0; y < romlist.nb_list[cfg.list]; ++y) {
-				put_stringM(ROMLIST(name, y), // string
+		if(use_language_pack) 
+			prepare_fontsurf();
+		romlist_y = START_Y;
+		if(romlist.nb_list[cfg.list] <= gui_lang.gamelist_line_count) {
+			for(unsigned int fID = 0; fID < romlist.nb_list[cfg.list]; ++fID) {
+				const int romID = gui_get_filtered_romsort(cfg.list, cfg.hardware, cfg.genre, cfg.clone)[fID];
+				const bool df_color = selected_flag_roms.count(romID);
+				if(!use_language_pack)
+					put_stringM(ROMLIST(name, fID), // string
 						START_X, // x
-						zipnum, // y
-						ROMLIST(longueur, y), // length
-						ROMLIST(etat, y)); // color
-				zipnum += LINE_HEIGHT;
+						romlist_y, // y
+						ROMLIST(longueur, fID), // length
+						df_color? BLANC : ROMLIST(etat, fID)); // color
+				else
+					lang_put_stringM(romID,
+						START_X, // x
+						romlist_y, // y
+						df_color? BLANC : ROMLIST(etat, fID)); // color
+				romlist_y += gui_lang.gamelist_line_height;
 			}
 		} else {
-			for(y = sel.ofs; y < sel.ofs + LINES_COUNT; ++y) {
-				put_stringM(ROMLIST(name, y), 
+			for(unsigned int fID = sel.ofs; fID < sel.ofs + gui_lang.gamelist_line_count; ++fID) {
+				const int romID = gui_get_filtered_romsort(cfg.list, cfg.hardware, cfg.genre, cfg.clone)[fID];
+				const bool df_color = selected_flag_roms.count(romID);
+				if(!use_language_pack)
+					put_stringM(ROMLIST(name, fID), 
 						START_X, 
-						zipnum, 
-						ROMLIST(longueur, y), 
-						ROMLIST(etat, y));
-				zipnum += LINE_HEIGHT;
+						romlist_y, 
+						ROMLIST(longueur, fID), 
+						df_color? BLANC : ROMLIST(etat, fID));
+				else
+					lang_put_stringM(romID,
+						START_X, // x
+						romlist_y, // y
+						df_color? BLANC : ROMLIST(etat, fID)); // color
+				romlist_y += gui_lang.gamelist_line_height;
 			}
 		}
+		if(use_language_pack) 
+			lang_show_gamelist_lines();
 
 		redraw_screen();
 
@@ -1616,6 +1945,7 @@ void gui_menu_main()
 					// no need to increment compteur
 					continue;
 				} else if(event.key.keysym.sym == SDLK_TAB) { // page up
+pageup:
 					Uint8* keystate = SDL_GetKeyState(NULL);
 					if (keystate[SDLK_LSHIFT]) {
 						if (compteur == 0) {
@@ -1626,17 +1956,19 @@ void gui_menu_main()
 							prep_bg_main();
 							gui_write_cfg();
 						}
-					} else if (romlist.nb_list[cfg.list] > LINES_COUNT) {
-						sel.rom -= LINES_COUNT;
-						if(sel.rom > LINES_COUNT_HALF) {
-							sel.ofs = sel.rom - LINES_COUNT_HALF;
-							sel.y = START_Y - 1 + LINES_COUNT_HALF * LINE_HEIGHT;
+					} else if (romlist.nb_list[cfg.list] > gui_lang.gamelist_line_count) {
+						sel.rom -= gui_lang.gamelist_line_count;
+						if(sel.rom > gui_lang.gamelist_line_count_half) {
+							sel.ofs = sel.rom - gui_lang.gamelist_line_count_half;
+							sel.y = START_Y - 1 + gui_lang.gamelist_line_count_half * gui_lang.gamelist_line_height;
 						} else {
 							sel.ofs = sel.rom = 0;
 							sel.y = START_Y - 1;
 						}
+						gui_validate_selection();
 					}
 				} else if(event.key.keysym.sym == SDLK_BACKSPACE) { // page down
+pagedown:
 					Uint8* keystate = SDL_GetKeyState(NULL);
 					if (keystate[SDLK_LSHIFT]) {
 						if (compteur == 0) {
@@ -1646,20 +1978,19 @@ void gui_menu_main()
 							prep_bg_main();
 							gui_write_cfg();
 						}
-					} else if (romlist.nb_list[cfg.list] > LINES_COUNT) {
-						sel.rom += LINES_COUNT;
-						if(sel.rom < romlist.nb_list[cfg.list] - LINES_COUNT_HALF) {
-							sel.ofs = sel.rom - LINES_COUNT_HALF;
-							sel.y = START_Y - 1 + LINES_COUNT_HALF * LINE_HEIGHT;
+					} else if (romlist.nb_list[cfg.list] > gui_lang.gamelist_line_count) {
+						sel.rom += gui_lang.gamelist_line_count;
+						if(sel.rom < romlist.nb_list[cfg.list] - gui_lang.gamelist_line_count_half) {
+							sel.ofs = sel.rom - gui_lang.gamelist_line_count_half;
+							sel.y = START_Y - 1 + gui_lang.gamelist_line_count_half * gui_lang.gamelist_line_height;
 						} else {
 							sel.rom = romlist.nb_list[cfg.list] - 1;
-							sel.ofs = sel.rom - (LINES_COUNT - 1);
-							sel.y = START_Y - 1 + (LINES_COUNT - 1) * LINE_HEIGHT;
+							sel.ofs = sel.rom - (gui_lang.gamelist_line_count - 1);
+							sel.y = START_Y - 1 + (gui_lang.gamelist_line_count - 1) * gui_lang.gamelist_line_height;
 						}
 					}
 				} else if(event.key.keysym.sym == SDLK_DOWN) {
-					Uint8* keystate = SDL_GetKeyState(NULL);
-					if (keystate[SDLK_LSHIFT]) {
+					if (SDL_GetKeyState(NULL)[SDLK_LSHIFT]) {
 						if (compteur == 0) {
 							// next filter
 							cfg.list = (cfg.list + 1) % NB_FILTERS;
@@ -1675,18 +2006,21 @@ void gui_menu_main()
 						sel.rom = 0;
 						sel.ofs = 0;
 					} else {
-						if (romlist.nb_list[cfg.list] < 14) { // if rom number in list < 14
+movedown:
+						if (romlist.nb_list[cfg.list] <= gui_lang.gamelist_line_count) {
+							// if rom number in list <= gui_lang.gamelist_line_count
 								if (sel.rom < romlist.nb_list[cfg.list] - 1) {
-									sel.y += LINE_HEIGHT;
+									sel.y += gui_lang.gamelist_line_height;
 									++sel.rom;
 									if(compteur == 0) {
 										load_preview(sel.rom);
 									}
 								}
 						}else{
-							if (sel.rom < LINES_COUNT_HALF || sel.ofs == (romlist.nb_list[cfg.list] - LINES_COUNT)) {
+							if (sel.rom < gui_lang.gamelist_line_count_half ||
+									sel.ofs == (romlist.nb_list[cfg.list] - gui_lang.gamelist_line_count)) {
 								if (sel.rom < (romlist.nb_list[cfg.list] - 1)) {
-									sel.y += LINE_HEIGHT;
+									sel.y += gui_lang.gamelist_line_height;
 									++sel.rom;
 									if(compteur == 0) {
 										load_preview(sel.rom);
@@ -1715,17 +2049,17 @@ void gui_menu_main()
 					} else if (romlist.nb_list[cfg.list] == 0) {
 					} else if (sel.rom == 0 && compteur == 0) {
 						sel.rom = romlist.nb_list[cfg.list] - 1;
-						if (romlist.nb_list[cfg.list] < LINES_COUNT) {
-							sel.y = START_Y - 1 + ((romlist.nb_list[cfg.list] - 1) * LINE_HEIGHT);
+						if (romlist.nb_list[cfg.list] < gui_lang.gamelist_line_count) {
+							sel.y = START_Y - 1 + ((romlist.nb_list[cfg.list] - 1) * gui_lang.gamelist_line_height);
 							//sel.ofs = 0;
 						} else {
-							sel.y = START_Y - 1 + ((LINES_COUNT - 1) * LINE_HEIGHT);
-							sel.ofs = romlist.nb_list[cfg.list] - LINES_COUNT;
+							sel.y = START_Y - 1 + ((gui_lang.gamelist_line_count - 1) * gui_lang.gamelist_line_height);
+							sel.ofs = romlist.nb_list[cfg.list] - gui_lang.gamelist_line_count;
 						}
 					} else {
-						if(sel.rom > romlist.nb_list[cfg.list] - LINES_COUNT_HALF || sel.ofs == 0) {
+						if(sel.rom > romlist.nb_list[cfg.list] - gui_lang.gamelist_line_count_half || sel.ofs == 0) {
 							if(sel.rom > 0) {
-								sel.y -= LINE_HEIGHT;
+								sel.y -= gui_lang.gamelist_line_height;
 								--sel.rom;
 								if(compteur == 0) {
 									load_preview(sel.rom);
@@ -1750,10 +2084,14 @@ void gui_menu_main()
 							prep_bg_main();
 							gui_write_cfg();
 						}
+					} else
+						goto pageup;
+#if 0
 					} else if (romlist.nb_list[cfg.list] == 0) {
 					} else if (sel.x > 0) {
 						--sel.x;
 					}
+#endif
 				} else if(event.key.keysym.sym == SDLK_RIGHT) {
 					Uint8* keystate = SDL_GetKeyState(NULL);
 					if (keystate[SDLK_LSHIFT]) {
@@ -1764,33 +2102,93 @@ void gui_menu_main()
 							prep_bg_main();
 							gui_write_cfg();
 						}
+					} else
+						goto pagedown;
+#if 0
 					} else if (romlist.nb_list[cfg.list] == 0) {
 					} else if (sel.x < romlist.long_max - 53) {
 						++sel.x;
 					}
-
-				} else if(event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_LALT) {
+#endif
+				} else if(event.key.keysym.sym == SDLK_ESCAPE ) { // SELECT button
+					Uint8* keystate = SDL_GetKeyState(NULL);
+					if (keystate[SDLK_LSHIFT]) {
+						if(romlist.nb_list[cfg.list] != 0 && ROMLIST(etat, sel.rom) != ROUGE) {
+							int sel_rom = gui_get_filtered_romsort(cfg.list, cfg.hardware, cfg.genre, cfg.clone)[sel.rom];
+							if (0 == selected_flag_roms.count(sel_rom))
+								selected_flag_roms.insert(sel_rom);
+							else
+								selected_flag_roms.erase(sel_rom);
+							if (sel.rom == romlist.nb_list[cfg.list] - 1 && compteur == 0) {
+								sel.y = START_Y - 1;
+								sel.rom = 0;
+								sel.ofs = 0;
+							} else
+								goto movedown;
+						}
+					}
+					else if(ss_prg_credit()) Quit = 1;
+				} else if( event.key.keysym.sym == SDLK_LALT) { // B button
 					if(ss_prg_credit()) Quit = 1;
-				} else if(event.key.keysym.sym == SDLK_LCTRL){
-					// executer l'emu
-					if(romlist.nb_list[cfg.list] != 0 && ROMLIST(etat, sel.rom) != ROUGE) {
-						ss_prog_run();
+				} else if(event.key.keysym.sym == SDLK_LCTRL){ // A button
+					if (SDL_GetKeyState(NULL)[SDLK_LSHIFT]) {
+						for(auto onerom : selected_flag_roms) {
+							if (4 != cfg.list)
+								add_to_favorite(onerom);
+							else
+								remove_from_favorite(onerom);
+						}
+						save_favorite();
+						selected_flag_roms.clear();
+						if (4 == cfg.list )
+						{
+							sel.y = START_Y - 1;
+							sel.rom = 0;
+							sel.ofs = 0;
+						}
+						// change filtered romsort to other list force update then change back in prep_bg_main()
+						gui_get_filtered_romsort((cfg.list+1)%NB_FILTERS, cfg.hardware, cfg.genre, cfg.clone);
 						prep_bg_main();
+					}
+					else {
+						// executer l'emu
+						if(romlist.nb_list[cfg.list] != 0 && ROMLIST(etat, sel.rom) != ROUGE) {
+							ss_prog_run();
+							prep_bg_main();
+							last_numero = -1; // force reload preview picture
+							load_preview(sel.rom);
 
-						// flush event queue
-						while(SDL_PollEvent(&event));
-						// simulate key unpress
-						// important
-						event.type = SDL_KEYUP;
-						event.key.keysym.sym = SDLK_LCTRL;
-						SDL_PushEvent(&event);
-						compteur = 0;
-						continue;
+							// flush event queue
+							while(SDL_PollEvent(&event));
+							// simulate key unpress
+							// important
+							event.type = SDL_KEYUP;
+							event.key.keysym.sym = SDLK_LCTRL;
+							SDL_PushEvent(&event);
+							compteur = 0;
+							continue;
+						}
 					}
 				} else if(event.key.keysym.sym == SDLK_SPACE ){
 					if(compteur == 0) ss_prg_help();
-				} else if(event.key.keysym.sym == SDLK_RETURN ){
-					ss_prg_options(OPTION_MAIN_FIRST, OPTION_MAIN_LAST);
+				} else if(event.key.keysym.sym == SDLK_RETURN ){ // START button
+					if (SDL_GetKeyState(NULL)[SDLK_LSHIFT]) {
+					// apply delete flag roms delete permanently 
+						char romfilepath[MAX_PATH];
+						for(auto onerom : selected_flag_roms) {
+							for(int idr = 0; idr < DIRS_MAX; idr++) {
+								if(!strlen(szAppRomPaths[idr]))
+									continue;
+								sprintf(romfilepath, "%s%s.zip", szAppRomPaths[idr], romlist.zip[onerom]);
+								remove(romfilepath);
+							}
+							romlist.etat[onerom] = ROUGE;
+						}
+						selected_flag_roms.clear();
+						prep_bg_main();
+					}
+					else
+						ss_prg_options(OPTION_MAIN_FIRST, OPTION_MAIN_LAST);
 				}
 			}
 			++compteur;
@@ -1809,8 +2207,10 @@ void GuiRun()
 {
 	// fill data with data
 	gui_sort_romlist();
+	use_language_pack = gui_load_language_pack();
+	set_language();
 
-	gui_screen = SDL_SetVideoMode(320, 240, 16, SDL_SWSURFACE);
+	gui_screen = SDL_SetVideoMode(GUI_SCREEN_W, GUI_SCREEN_H, 16, SDL_SWSURFACE);
 
 	SDL_ShowCursor(0);
 	SDL_JoystickOpen(0);

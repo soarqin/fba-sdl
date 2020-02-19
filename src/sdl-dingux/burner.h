@@ -193,9 +193,12 @@ extern CFG_AUTOFIRE autofire;
 
 int ConfigAppLoad();
 int ConfigAppSave();
+void ConfigGameAllDefault();
 void ConfigGameDefault();
 int ConfigGameLoadDefault();
+int ConfigGameLoadVDefault();
 int ConfigGameSaveDefault();
+int ConfigGameSaveVDefault();
 void ConfigGameDefaultDelete();
 int ConfigGameLoad();
 int ConfigGameSave();
